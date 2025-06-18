@@ -1,4 +1,7 @@
 // utils/patternGenerator.js
+const { exec } = require('child_process');
+const path = require('path');
+
 /**
  * Generate potential email patterns based on first name and last name
  * @param {string} firstName - User's first name
@@ -62,7 +65,43 @@ function guessDomainFromCompanyName(companyName) {
   ];
 }
 
+/**
+ * Scrape domain from LinkedIn using Python script
+ * @param {string} companySlug - LinkedIn company slug
+ * @returns {Promise<string|null>} - Company domain or null if failed
+ */
+function scrapeDomainFromLinkedIn(companySlug) {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(__dirname, '..', 'script.py');
+    const command = `python3 ${scriptPath} ${companySlug}`;
+    
+    console.log(`Scraping domain for company slug: ${companySlug}`);
+    
+    exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Error executing Python script: ${error.message}`);
+        resolve(null);
+        return;
+      }
+      
+      if (stderr && stderr.trim()) {
+        console.error(`Python script stderr: ${stderr.trim()}`);
+      }
+      
+      const domain = stdout.trim();
+      if (domain) {
+        console.log(`Successfully scraped domain: ${domain}`);
+        resolve(domain);
+      } else {
+        console.log(`No domain found for company slug: ${companySlug}`);
+        resolve(null);
+      }
+    });
+  });
+}
+
 module.exports = {
   generateEmailPatterns,
-  guessDomainFromCompanyName
+  guessDomainFromCompanyName,
+  scrapeDomainFromLinkedIn
 };

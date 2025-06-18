@@ -3,7 +3,7 @@ const Company = require('../models/company');
 const Pattern = require('../models/pattern');
 const Person = require('../models/person');
 const CatchAllDomain = require('../models/catchAllDomain');
-const { generateEmailPatterns, guessDomainFromCompanyName } = require('../utils/patternGenerator');
+const { generateEmailPatterns, guessDomainFromCompanyName, scrapeDomainFromLinkedIn } = require('../utils/patternGenerator');
 const { verifyEmail, detectCatchAllDomain } = require('../utils/emailVerifier');
 const dns = require('dns');
 const { promisify } = require('util');
@@ -11,23 +11,63 @@ const { promisify } = require('util');
 const resolveMx = promisify(dns.resolveMx);
 
 /**
- * Find or create a company by name and domain
+ * Find or create a company by name, domain, and LinkedIn data
  */
-async function findOrCreateCompany(companyName, domain) {
-  let company = await Company.findOne({ 
-    $or: [
-      { name: { $regex: new RegExp(companyName, 'i') } },
-      { domain: domain }
-    ]
-  });
+async function findOrCreateCompany(companyName, domain, linkedinData = {}) {
+  const { companySlug, companyUrn, companyUrl } = linkedinData;
+  
+  // Try to find by LinkedIn slug first (most specific)
+  let company;
+  if (companySlug) {
+    company = await Company.findOne({ linkedinSlug: companySlug });
+  }
+  
+  // If not found by slug, try by name or domain
+  if (!company) {
+    company = await Company.findOne({ 
+      $or: [
+        { name: { $regex: new RegExp(companyName, 'i') } },
+        { domain: domain }
+      ]
+    });
+  }
   
   if (!company) {
+    // Create new company with LinkedIn data
     company = new Company({
       name: companyName,
       domain: domain,
+      linkedinSlug: companySlug,
+      linkedinUrn: companyUrn,
+      linkedinUrl: companyUrl,
       verifiedPatterns: []
     });
     await company.save();
+    console.log(`Created new company: ${companyName} with LinkedIn slug: ${companySlug}`);
+  } else {
+    // Update existing company with LinkedIn data if not present
+    let updated = false;
+    if (companySlug && !company.linkedinSlug) {
+      company.linkedinSlug = companySlug;
+      updated = true;
+    }
+    if (companyUrn && !company.linkedinUrn) {
+      company.linkedinUrn = companyUrn;
+      updated = true;
+    }
+    if (companyUrl && !company.linkedinUrl) {
+      company.linkedinUrl = companyUrl;
+      updated = true;
+    }
+    if (domain && !company.domain) {
+      company.domain = domain;
+      updated = true;
+    }
+    
+    if (updated) {
+      await company.save();
+      console.log(`Updated company ${companyName} with LinkedIn data`);
+    }
   }
   
   return company;
@@ -63,23 +103,81 @@ async function updateCompanyPattern(company, pattern) {
 }
 
 /**
- * Save person data with verification results
+ * Save person data with verification results and LinkedIn information
  */
 async function savePersonData(personData, company, verifiedEmail, allResults) {
-  // Check if person already exists
-  let person = await Person.findOne({
-    firstName: personData.firstName,
-    lastName: personData.lastName,
-    company: personData.company
-  });
+  const { 
+    firstName, lastName, company: companyName,
+    publicIdentifier, profileId, headline, linkedinUrl
+  } = personData;
+  
+  // Try to find by LinkedIn identifiers first (most specific)
+  let person;
+  if (publicIdentifier) {
+    person = await Person.findOne({ publicIdentifier });
+  }
+  
+  // If not found by LinkedIn ID, try by profileId
+  if (!person && profileId) {
+    person = await Person.findOne({ profileId });
+  }
+  
+  // If still not found, try by name and company
+  if (!person) {
+    person = await Person.findOne({
+      firstName: { $regex: new RegExp(`^${firstName}$`, 'i') },
+      lastName: { $regex: new RegExp(`^${lastName}$`, 'i') },
+      company: { $regex: new RegExp(`^${companyName}$`, 'i') }
+    });
+  }
   
   if (!person) {
+    // Create new person with all data
     person = new Person({
       ...personData,
       companyId: company._id,
       domain: company.domain,
       allTestedEmails: []
     });
+    console.log(`Created new person: ${firstName} ${lastName} with LinkedIn ID: ${publicIdentifier}`);
+  } else {
+    // Update existing person with new LinkedIn data if not present
+    let updated = false;
+    
+    if (publicIdentifier && !person.publicIdentifier) {
+      person.publicIdentifier = publicIdentifier;
+      updated = true;
+    }
+    if (profileId && !person.profileId) {
+      person.profileId = profileId;
+      updated = true;
+    }
+    if (headline && !person.headline) {
+      person.headline = headline;
+      updated = true;
+    }
+    if (linkedinUrl && !person.linkedinUrl) {
+      person.linkedinUrl = linkedinUrl;
+      updated = true;
+    }
+    
+    // Update other fields
+    if (personData.joiningDate && !person.joiningDate) {
+      person.joiningDate = personData.joiningDate;
+      updated = true;
+    }
+    if (personData.educationalInstitute && !person.educationalInstitute) {
+      person.educationalInstitute = personData.educationalInstitute;
+      updated = true;
+    }
+    if (personData.currentPosition && !person.currentPosition) {
+      person.currentPosition = personData.currentPosition;
+      updated = true;
+    }
+    
+    if (updated) {
+      console.log(`Updated person ${firstName} ${lastName} with LinkedIn data`);
+    }
   }
   
   // Update verification data
@@ -110,33 +208,57 @@ async function findWorkEmail(req, res) {
     const {
       firstName,
       lastName,
-      company: companyName,
-      domain: providedDomain,
-      currentPosition,
-      phone,
-      educationalInstitute,
-      previousCompanies,
-      qualifications
+      headline,
+      publicIdentifier,
+      profileId,
+      positions,
+      educations
     } = req.body;
     
-    // Step 1: Determine domain from provided domain or company name
+    // Extract company information from the first position
+    const currentPosition = positions[0];
+    const companyName = currentPosition.companyName;
+    const companySlug = currentPosition.companySlug;
+    const joiningDate = currentPosition.joiningDate;
+    
+    // Extract education information
+    const educationalInstitute = educations && educations.length > 0 ? educations[0].schoolName : null;
+    
+    // Additional data for person record
+    const phone = null; // Not provided in LinkedIn format
+    const previousCompanies = positions.slice(1).map(pos => pos.companyName);
+    const qualifications = educations ? educations.map(edu => edu.schoolName) : [];
+    
+    // Step 1: Determine domain by scraping LinkedIn or fallback methods
     let domain;
     try {
-      if (providedDomain) {
-        // Use provided domain
-        domain = providedDomain.toLowerCase().trim();
-        console.log(`Using provided domain: ${domain}`);
-      } else {
-        // Try to find domain from existing companies
-        const existingCompany = await Company.findOne({
+      // First, try to find domain from existing companies
+      // Check by LinkedIn slug first (most accurate)
+      let existingCompany;
+      if (companySlug) {
+        existingCompany = await Company.findOne({ linkedinSlug: companySlug });
+      }
+      
+      // Fallback to name matching
+      if (!existingCompany) {
+        existingCompany = await Company.findOne({
           name: { $regex: new RegExp(companyName, 'i') }
         });
+      }
+      
+      if (existingCompany && existingCompany.domain) {
+        domain = existingCompany.domain;
+        console.log(`Found existing domain ${domain} for company ${companyName}`);
+      } else {
+        // Try to scrape domain from LinkedIn using company slug
+        console.log(`Attempting to scrape domain for company slug: ${companySlug}`);
+        domain = await scrapeDomainFromLinkedIn(companySlug);
         
-        if (existingCompany) {
-          domain = existingCompany.domain;
-          console.log(`Found existing domain ${domain} for company ${companyName}`);
+        if (domain) {
+          console.log(`Successfully scraped domain ${domain} for company ${companyName}`);
         } else {
-          // Make an educated guess or use external API
+          // Fall back to guessing domain from company name
+          console.log(`Scraping failed, falling back to domain guessing for company ${companyName}`);
           const potentialDomains = guessDomainFromCompanyName(companyName);
           
           // Try to validate each domain by checking for MX records
@@ -153,13 +275,13 @@ async function findWorkEmail(req, res) {
               continue;
             }
           }
-          
-          if (!domain) {
-            return res.status(400).json({
-              success: false,
-              message: 'Could not determine email domain for this company'
-            });
-          }
+        }
+        
+        if (!domain) {
+          return res.status(400).json({
+            success: false,
+            message: 'Could not determine email domain for this company. Please check the company slug or provide domain manually.'
+          });
         }
       }
     } catch (error) {
@@ -180,14 +302,23 @@ async function findWorkEmail(req, res) {
           firstName,
           lastName,
           company: companyName,
+          companySlug,
           domain,
+          headline,
+          publicIdentifier,
+          profileId,
           isCatchAll: true
         }
       });
     }
     
-    // Step 3: Get or create company in database
-    const company = await findOrCreateCompany(companyName, domain);
+    // Step 3: Get or create company in database with LinkedIn data
+    const linkedinCompanyData = {
+      companySlug,
+      companyUrn: currentPosition.companyUrn,
+      companyUrl: currentPosition.companyUrl
+    };
+    const company = await findOrCreateCompany(companyName, domain, linkedinCompanyData);
     
     // Step 4: Check if we have verified patterns for this company
     let emailsToVerify = [];
@@ -225,11 +356,24 @@ async function findWorkEmail(req, res) {
     }
     
     // Step 5: Check if this person already exists in our database
-    const existingPerson = await Person.findOne({
-      firstName: { $regex: new RegExp(`^${firstName}$`, 'i') },
-      lastName: { $regex: new RegExp(`^${lastName}$`, 'i') },
-      company: { $regex: new RegExp(`^${companyName}$`, 'i') }
-    });
+    // Try LinkedIn identifiers first for more accurate matching
+    let existingPerson;
+    if (publicIdentifier) {
+      existingPerson = await Person.findOne({ publicIdentifier });
+    }
+    
+    if (!existingPerson && profileId) {
+      existingPerson = await Person.findOne({ profileId });
+    }
+    
+    // Fallback to name and company matching
+    if (!existingPerson) {
+      existingPerson = await Person.findOne({
+        firstName: { $regex: new RegExp(`^${firstName}$`, 'i') },
+        lastName: { $regex: new RegExp(`^${lastName}$`, 'i') },
+        company: { $regex: new RegExp(`^${companyName}$`, 'i') }
+      });
+    }
     
     if (existingPerson && existingPerson.verifiedEmail) {
       console.log(`Found existing verified email for ${firstName} ${lastName}: ${existingPerson.verifiedEmail}`);
@@ -252,8 +396,12 @@ async function findWorkEmail(req, res) {
             firstName,
             lastName,
             company: companyName,
+            companySlug,
             domain,
-            currentPosition
+            headline,
+            publicIdentifier,
+            profileId,
+            joiningDate
           }
         });
       } else {
@@ -301,7 +449,11 @@ async function findWorkEmail(req, res) {
                 firstName,
                 lastName,
                 company: companyName,
+                companySlug,
                 domain,
+                headline,
+                publicIdentifier,
+                profileId,
                 isCatchAll: true
               }
             });
@@ -321,11 +473,17 @@ async function findWorkEmail(req, res) {
         firstName,
         lastName,
         company: companyName,
-        currentPosition,
+        currentPosition: headline,
+        joiningDate,
         phone,
         educationalInstitute,
         previousCompanies,
-        qualifications
+        qualifications,
+        // LinkedIn-specific data
+        publicIdentifier,
+        profileId,
+        headline,
+        linkedinUrl: `https://www.linkedin.com/in/${publicIdentifier}`
       };
       
       await savePersonData(personData, company, verifiedEmails[0], verificationResults);
@@ -341,8 +499,12 @@ async function findWorkEmail(req, res) {
           firstName,
           lastName,
           company: companyName,
+          companySlug,
           domain,
-          currentPosition
+          headline,
+          publicIdentifier,
+          profileId,
+          joiningDate
         }
       });
     } else {
@@ -354,8 +516,12 @@ async function findWorkEmail(req, res) {
           firstName,
           lastName,
           company: companyName,
+          companySlug,
           domain,
-          currentPosition
+          headline,
+          publicIdentifier,
+          profileId,
+          joiningDate
         }
       });
     }
@@ -403,10 +569,21 @@ function derivePatternFromEmail(email, firstName, lastName, domain) {
 async function getCompanyPatterns(req, res) {
   try {
     const { company } = req.params;
+    const { linkedinSlug } = req.query;
     
-    const companyDoc = await Company.findOne({
-      name: { $regex: new RegExp(company, 'i') }
-    });
+    let companyDoc;
+    
+    // Try LinkedIn slug first if provided
+    if (linkedinSlug) {
+      companyDoc = await Company.findOne({ linkedinSlug });
+    }
+    
+    // Fallback to name search
+    if (!companyDoc) {
+      companyDoc = await Company.findOne({
+        name: { $regex: new RegExp(company, 'i') }
+      });
+    }
     
     if (!companyDoc) {
       return res.status(404).json({
@@ -419,6 +596,9 @@ async function getCompanyPatterns(req, res) {
       success: true,
       company: companyDoc.name,
       domain: companyDoc.domain,
+      linkedinSlug: companyDoc.linkedinSlug,
+      linkedinUrn: companyDoc.linkedinUrn,
+      linkedinUrl: companyDoc.linkedinUrl,
       isCatchAll: companyDoc.isCatchAll,
       patterns: companyDoc.verifiedPatterns.sort((a, b) => b.usageCount - a.usageCount)
     });
@@ -458,20 +638,34 @@ async function getGlobalPatterns(req, res) {
  */
 async function getPersonData(req, res) {
   try {
-    const { firstName, lastName, company } = req.query;
+    const { firstName, lastName, company, publicIdentifier, profileId } = req.query;
     
-    if (!firstName || !lastName || !company) {
-      return res.status(400).json({
-        success: false,
-        message: 'First name, last name, and company are required'
-      });
+    let person;
+    
+    // Try LinkedIn identifiers first (most accurate)
+    if (publicIdentifier) {
+      person = await Person.findOne({ publicIdentifier });
     }
     
-    const person = await Person.findOne({
-      firstName: { $regex: new RegExp(`^${firstName}$`, 'i') },
-      lastName: { $regex: new RegExp(`^${lastName}$`, 'i') },
-      company: { $regex: new RegExp(`^${company}$`, 'i') }
-    });
+    if (!person && profileId) {
+      person = await Person.findOne({ profileId });
+    }
+    
+    // Fallback to name and company search
+    if (!person) {
+      if (!firstName || !lastName || !company) {
+        return res.status(400).json({
+          success: false,
+          message: 'Either LinkedIn identifiers (publicIdentifier/profileId) or name fields (firstName, lastName, company) are required'
+        });
+      }
+      
+      person = await Person.findOne({
+        firstName: { $regex: new RegExp(`^${firstName}$`, 'i') },
+        lastName: { $regex: new RegExp(`^${lastName}$`, 'i') },
+        company: { $regex: new RegExp(`^${company}$`, 'i') }
+      });
+    }
     
     if (!person) {
       return res.status(404).json({

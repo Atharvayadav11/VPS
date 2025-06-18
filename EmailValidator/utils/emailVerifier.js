@@ -44,7 +44,7 @@ async function markAsCatchAll(domain) {
  * @param {string} fromEmail - Email to use as sender
  * @returns {Promise<Object>} - Verification result
  */
-async function verifyEmail(email, fromEmail = 'team@emailvalidator.online') {
+async function verifyEmail(email, fromEmail = 'team@emailvalidator.space') {
   const domain = email.split('@')[1];
   
   try {
@@ -165,7 +165,7 @@ function smtpVerify(email, mxServer, fromEmail) {
         switch (step) {
           case 0: // Connected
             logStep('CONNECT', response);
-            socket.write(`HELO emailvalidator.online\r\n`);
+            socket.write(`HELO emailvalidator.space\r\n`);
             step = 1;
             break;
             

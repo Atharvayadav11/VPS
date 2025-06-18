@@ -1,0 +1,4 @@
+selenium>=4.15.0
+undetected-chromedriver>=3.5.0
+fake-useragent>=1.4.0
+tldextract>=5.1.0 

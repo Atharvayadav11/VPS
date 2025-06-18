@@ -1,16 +1,29 @@
-// models/company.js - Updated to store more information
+// models/company.js - Updated to store LinkedIn information
 const mongoose = require('mongoose');
 
 const companySchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
-    unique: true,
     trim: true
   },
   domain: {
     type: String,
     required: true,
+    trim: true
+  },
+  // LinkedIn-specific fields
+  linkedinSlug: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  linkedinUrn: {
+    type: String,
+    trim: true
+  },
+  linkedinUrl: {
+    type: String,
     trim: true
   },
   isCatchAll: {
@@ -32,5 +45,10 @@ const companySchema = new mongoose.Schema({
     }
   }]
 }, { timestamps: true });
+
+// Create compound index for better lookups
+companySchema.index({ name: 1, linkedinSlug: 1 });
+companySchema.index({ domain: 1 });
+companySchema.index({ linkedinSlug: 1 });
 
 module.exports = mongoose.model('Company', companySchema);

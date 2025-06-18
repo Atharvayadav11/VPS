@@ -1,4 +1,4 @@
-// models/person.js - New model to store person data
+// models/person.js - Updated to store LinkedIn information
 const mongoose = require('mongoose');
 
 const personSchema = new mongoose.Schema({
@@ -22,11 +22,36 @@ const personSchema = new mongoose.Schema({
     ref: 'Company'
   },
   domain: String,
+  
+  // LinkedIn-specific fields
+  publicIdentifier: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  profileId: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  headline: {
+    type: String,
+    trim: true
+  },
+  linkedinUrl: {
+    type: String,
+    trim: true
+  },
+  
+  // Position and education info
   currentPosition: String,
+  joiningDate: String,
   phone: String,
   educationalInstitute: String,
   previousCompanies: [String],
   qualifications: [String],
+  
+  // Email verification data
   verifiedEmail: String,
   emailVerifiedAt: Date,
   allTestedEmails: [{
@@ -41,7 +66,10 @@ const personSchema = new mongoose.Schema({
   }]
 }, { timestamps: true });
 
-// Create index for faster lookups
+// Create indexes for faster lookups
 personSchema.index({ firstName: 1, lastName: 1, company: 1 });
+personSchema.index({ publicIdentifier: 1 });
+personSchema.index({ profileId: 1 });
+personSchema.index({ verifiedEmail: 1 });
 
 module.exports = mongoose.model('Person', personSchema);
