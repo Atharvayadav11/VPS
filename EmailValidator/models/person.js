@@ -26,13 +26,11 @@ const personSchema = new mongoose.Schema({
   // LinkedIn-specific fields
   publicIdentifier: {
     type: String,
-    trim: true,
-    index: true
+    trim: true
   },
   profileId: {
     type: String,
-    trim: true,
-    index: true
+    trim: true
   },
   headline: {
     type: String,

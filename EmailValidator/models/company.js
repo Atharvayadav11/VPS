@@ -15,8 +15,7 @@ const companySchema = new mongoose.Schema({
   // LinkedIn-specific fields
   linkedinSlug: {
     type: String,
-    trim: true,
-    index: true
+    trim: true
   },
   linkedinUrn: {
     type: String,
